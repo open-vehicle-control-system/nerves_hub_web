@@ -1,0 +1,55 @@
+name: build-push-ecr
+
+# Builds the app image and pushes it to AWS ECR on merge to main.
+# Auth is via GitHub OIDC (no static AWS keys). The cluster is arm64 (Graviton),
+# so we build natively on an arm64 runner.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # required for OIDC
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: ovcs/nerves-hub-web
+  ROLE_ARN: arn:aws:iam::924225826521:role/nerves-hub-web-ci
+
+jobs:
+  build-push:
+    runs-on: ovcs-arm64 # self-hosted ARC runners on the Graviton cluster (dind for builds)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        # Sortable tag for Flux image automation, e.g. main-20260701-1a2b3c4
+        run: echo "tag=main-$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
